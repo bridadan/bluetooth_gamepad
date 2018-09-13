@@ -47,8 +47,7 @@ uint8_t axes_initial[4];
 
 const uint8_t AXIS_MAX = 255;
 
-unsigned int map(unsigned int x, unsigned int in_min, unsigned int in_max, unsigned int out_min, unsigned int out_max)
-{
+unsigned int map(unsigned int x, unsigned int in_min, unsigned int in_max, unsigned int out_min, unsigned int out_max) {
     return (x - in_min) * (out_max - out_min) / (in_max - in_min) + out_min;
 }
 
@@ -65,7 +64,6 @@ uint8_t read_axis(unsigned int axis) {
 uint8_t _hidReport[6] = {0};
 
 int update_handle;
-
 
 void update_button() {
     if (hidServicePtr) {
@@ -125,18 +123,10 @@ void read_analog_sticks() {
     queue.call(update_button);
 }
 
-/** Blink LED to show we're running */
-void blink(void)
-{
+void blink(void) {
     led = !led;
 }
 
-/** Base class for both peripheral and central. The same class that provides
- *  the logic for the application also implements the SecurityManagerEventHandler
- *  which is the interface used by the Security Manager to communicate events
- *  back to the applications. You can provide overrides for a selection of events
- *  your application is interested in.
- */
 class SMDevice : private mbed::NonCopyable<SMDevice>,
                  public SecurityManager::EventHandler
 {
@@ -146,9 +136,7 @@ public:
     /** Respond to a pairing request. This will be called by the stack
      * when a pairing request arrives and expects the application to
      * call acceptPairingRequest or cancelPairingRequest */
-    virtual void pairingRequest(
-        ble::connection_handle_t connectionHandle
-    ) {
+    virtual void pairingRequest(ble::connection_handle_t connectionHandle) {
         printf("Pairing requested. Authorising.\r\n");
         BLE::Instance().securityManager().acceptPairingRequest(connectionHandle);
     }
@@ -191,23 +179,20 @@ public:
 SMDevice securityManagerEventHandler;
 
 /** Schedule processing of events from the BLE in the event queue. */
-void schedule_ble_events(BLE::OnEventsToProcessCallbackContext *context)
-{
+void schedule_ble_events(BLE::OnEventsToProcessCallbackContext *context) {
     queue.call(mbed::callback(&context->ble, &BLE::processEvents));
 }
 
 /** End demonstration unexpectedly. Called if timeout is reached during advertising,
  * scanning or connection initiation */
-void on_timeout(const Gap::TimeoutSource_t source)
-{
+void on_timeout(const Gap::TimeoutSource_t source) {
     printf("Unexpected timeout - aborting \r\n");
     queue.break_dispatch();
 }
 
 /** This is called by Gap to notify the application we connected,
  *  in our case it immediately requests a change in link security */
-void on_connect(const Gap::ConnectionCallbackParams_t *connection_event)
-{
+void on_connect(const Gap::ConnectionCallbackParams_t *connection_event) {
     BLE& ble = BLE::Instance();
     ble_error_t error;
 
@@ -229,8 +214,7 @@ void on_connect(const Gap::ConnectionCallbackParams_t *connection_event)
 
 /** This is called by Gap to notify the application we disconnected,
  *  in our case it ends the demonstration. */
-void on_disconnect(const Gap::DisconnectionCallbackParams_t *event)
-{
+void on_disconnect(const Gap::DisconnectionCallbackParams_t *event) {
     BLE& ble = BLE::Instance();
     ble_error_t error;
     printf("Disconnected - demonstration ended \r\n");
@@ -243,8 +227,7 @@ void on_disconnect(const Gap::DisconnectionCallbackParams_t *event)
     }
 };
 
-void start()
-{
+void start() {
     /* Set up and start advertising */
     BLE& ble = BLE::Instance();
     ble_error_t error;
@@ -299,8 +282,7 @@ void start()
 
 
 /** This is called when BLE interface is initialised and starts the demonstration */
-void on_init_complete(BLE::InitializationCompleteCallbackContext *event)
-{
+void on_init_complete(BLE::InitializationCompleteCallbackContext *event) {
     BLE& ble = BLE::Instance();
     ble_error_t error;
 
@@ -340,8 +322,7 @@ void on_init_complete(BLE::InitializationCompleteCallbackContext *event)
     queue.call_in(500, &start);
 };
 
-int main()
-{
+int main() {
     /* to show we're running we'll blink every 500ms */
     queue.call_every(500, &blink);
 
