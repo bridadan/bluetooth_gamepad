@@ -25,28 +25,12 @@
 JoystickService *hidServicePtr;
 
 events::EventQueue queue;
-/** This example demonstrates all the basic setup required
- *  for pairing and setting up link security both as a central and peripheral
- *
- *  The example is implemented as two classes, one for the peripheral and one
- *  for central inheriting from a common base. They are run in sequence and
- *  require a peer device to connect to. During the peripheral device demonstration
- *  a peer device is required to connect. In the central device demonstration
- *  this peer device will be scanned for and connected to - therefore it should
- *  be advertising with the same address as when it connected.
- *
- *  During the test output is written on the serial connection to monitor its
- *  progress.
- */
 
 static const uint8_t DEVICE_NAME[] = "Gamepad";
 
-/* for demonstration purposes we will store the peer device address
- * of the device that connects to us in the first demonstration
- * so we can use its address to reconnect to it later */
-static BLEProtocol::AddressBytes_t peer_address;
 HeapBlockDevice hbd(8192, 512);
 LittleFileSystem fs("fs");
+DigitalOut led(LED1);
 
 InterruptIn btn0(D0, PullUp);
 InterruptIn btn1(D1, PullUp);
@@ -81,6 +65,7 @@ uint8_t read_axis(unsigned int axis) {
 uint8_t _hidReport[6] = {0};
 
 int update_handle;
+
 
 void update_button() {
     if (hidServicePtr) {
@@ -140,6 +125,11 @@ void read_analog_sticks() {
     queue.call(update_button);
 }
 
+/** Blink LED to show we're running */
+void blink(void)
+{
+    led = !led;
+}
 
 /** Base class for both peripheral and central. The same class that provides
  *  the logic for the application also implements the SecurityManagerEventHandler
@@ -151,56 +141,6 @@ class SMDevice : private mbed::NonCopyable<SMDevice>,
                  public SecurityManager::EventHandler
 {
 public:
-    SMDevice(BLE &ble, events::EventQueue &event_queue, BLEProtocol::AddressBytes_t &peer_address) :
-        _led1(LED1, 0),
-        _ble(ble),
-        _event_queue(event_queue),
-        _peer_address(peer_address),
-        _handle(0),
-        _is_connecting(false) { };
-
-    virtual ~SMDevice()
-    {
-        if (_ble.hasInitialized()) {
-            _ble.shutdown();
-        }
-    };
-
-    /** Start BLE interface initialisation */
-    void run()
-    {
-        ble_error_t error;
-
-        /* to show we're running we'll blink every 500ms */
-        _event_queue.call_every(500, this, &SMDevice::blink);
-
-        if (_ble.hasInitialized()) {
-            printf("Ble instance already initialised.\r\n");
-            return;
-        }
-
-        /* this will inform us off all events so we can schedule their handling
-         * using our event queue */
-        _ble.onEventsToProcess(
-            makeFunctionPointer(this, &SMDevice::schedule_ble_events)
-        );
-
-        /* handle timeouts, for example when connection attempts fail */
-        _ble.gap().onTimeout(
-            makeFunctionPointer(this, &SMDevice::on_timeout)
-        );
-
-        error = _ble.init(this, &SMDevice::on_init_complete);
-
-        if (error) {
-            printf("Error returned by BLE::init.\r\n");
-            return;
-        }
-
-        /* this will not return until shutdown */
-        _event_queue.dispatch_forever();
-    };
-
     /* event handler functions */
 
     /** Respond to a pairing request. This will be called by the stack
@@ -210,7 +150,7 @@ public:
         ble::connection_handle_t connectionHandle
     ) {
         printf("Pairing requested. Authorising.\r\n");
-        _ble.securityManager().acceptPairingRequest(connectionHandle);
+        BLE::Instance().securityManager().acceptPairingRequest(connectionHandle);
     }
 
     /** Inform the application of a successful pairing. Terminate the demonstration. */
@@ -225,11 +165,11 @@ public:
         }
 
         /* disconnect in 500 ms */
-        /*_event_queue.call_in(
+        /*queue.call_in(
             5000, &_ble.gap(),
             &Gap::disconnect, _handle, Gap::REMOTE_USER_TERMINATED_CONNECTION
         );*/
-        update_handle = _event_queue.call_every(250, &read_analog_sticks);
+        update_handle = queue.call_every(250, &read_analog_sticks);
     }
 
     /** Inform the application of change in encryption status. This will be
@@ -246,195 +186,165 @@ public:
             printf("Link NOT_ENCRYPTED\r\n");
         }
     }
-
-private:
-    /** Override to start chosen activity when initialisation completes */
-    virtual void start() = 0;
-
-    /** This is called when BLE interface is initialised and starts the demonstration */
-    void on_init_complete(BLE::InitializationCompleteCallbackContext *event)
-    {
-        ble_error_t error;
-
-        if (event->error) {
-            printf("Error during the initialisation\r\n");
-            return;
-        }
-
-        /* If the security manager is required this needs to be called before any
-         * calls to the Security manager happen. */
-        error = _ble.securityManager().init(true, false, SecurityManager::IO_CAPS_NONE, NULL, true, "/fs/bt.db");
-
-        if (error) {
-            printf("Error during init %d\r\n", error);
-            return;
-        }
-
-        /* Tell the security manager to use methods in this class to inform us
-         * of any events. Class needs to implement SecurityManagerEventHandler. */
-        _ble.securityManager().setSecurityManagerEventHandler(this);
-
-        /* print device address */
-        Gap::AddressType_t addr_type;
-        Gap::Address_t addr;
-        _ble.gap().getAddress(&addr_type, addr);
-        printf("Device address: %02x:%02x:%02x:%02x:%02x:%02x\r\n",
-               addr[5], addr[4], addr[3], addr[2], addr[1], addr[0]);
-
-        /* when scanning we want to connect to a peer device so we need to
-         * attach callbacks that are used by Gap to notify us of events */
-        _ble.gap().onConnection(this, &SMDevice::on_connect);
-        _ble.gap().onDisconnection(this, &SMDevice::on_disconnect);
-
-        hidServicePtr = new JoystickService(_ble);
-
-        /* start test in 500 ms */
-        _event_queue.call_in(500, this, &SMDevice::start);
-    };
-
-    /** This is called by Gap to notify the application we connected */
-    virtual void on_connect(const Gap::ConnectionCallbackParams_t *connection_event) = 0;
-
-    /** This is called by Gap to notify the application we disconnected,
-     *  in our case it ends the demonstration. */
-    void on_disconnect(const Gap::DisconnectionCallbackParams_t *event)
-    {
-        ble_error_t error;
-        printf("Disconnected - demonstration ended \r\n");
-        _event_queue.cancel(update_handle);
-        error = _ble.gap().startAdvertising();
-        if (error) {
-            printf("Error during Gap::startAdvertising.\r\n");
-        } else {
-            printf("Started advertising\r\n");
-        }
-    };
-
-    /** End demonstration unexpectedly. Called if timeout is reached during advertising,
-     * scanning or connection initiation */
-    void on_timeout(const Gap::TimeoutSource_t source)
-    {
-        printf("Unexpected timeout - aborting \r\n");
-        _event_queue.break_dispatch();
-    };
-
-    /** Schedule processing of events from the BLE in the event queue. */
-    void schedule_ble_events(BLE::OnEventsToProcessCallbackContext *context)
-    {
-        _event_queue.call(mbed::callback(&context->ble, &BLE::processEvents));
-    };
-
-    /** Blink LED to show we're running */
-    void blink(void)
-    {
-        _led1 = !_led1;
-    };
-
-private:
-    DigitalOut _led1;
-
-protected:
-    BLE &_ble;
-    events::EventQueue &_event_queue;
-    BLEProtocol::AddressBytes_t &_peer_address;
-    ble::connection_handle_t _handle;
-    bool _is_connecting;
 };
 
-/** A peripheral device will advertise, accept the connection and request
- * a change in link security. */
-class SMDevicePeripheral : public SMDevice {
-public:
-    SMDevicePeripheral(BLE &ble, events::EventQueue &event_queue, BLEProtocol::AddressBytes_t &peer_address)
-        : SMDevice(ble, event_queue, peer_address) { }
+SMDevice securityManagerEventHandler;
 
-    virtual void start()
-    {
-        /* Set up and start advertising */
+/** Schedule processing of events from the BLE in the event queue. */
+void schedule_ble_events(BLE::OnEventsToProcessCallbackContext *context)
+{
+    queue.call(mbed::callback(&context->ble, &BLE::processEvents));
+}
 
-        ble_error_t error;
-        GapAdvertisingData advertising_data;
+/** End demonstration unexpectedly. Called if timeout is reached during advertising,
+ * scanning or connection initiation */
+void on_timeout(const Gap::TimeoutSource_t source)
+{
+    printf("Unexpected timeout - aborting \r\n");
+    queue.break_dispatch();
+}
 
-        /* add advertising flags */
-        advertising_data.addFlags(GapAdvertisingData::LE_GENERAL_DISCOVERABLE
-                                  | GapAdvertisingData::BREDR_NOT_SUPPORTED);
+/** This is called by Gap to notify the application we connected,
+ *  in our case it immediately requests a change in link security */
+void on_connect(const Gap::ConnectionCallbackParams_t *connection_event)
+{
+    BLE& ble = BLE::Instance();
+    ble_error_t error;
 
-        static const uint16_t uuid16_list[] =  {GattService::UUID_HUMAN_INTERFACE_DEVICE_SERVICE};
+    /* Request a change in link security. This will be done
+     * indirectly by asking the master of the connection to
+     * change it. Depending on circumstances different actions
+     * may be taken by the master which will trigger events
+     * which the applications should deal with. */
+    error = ble.securityManager().setLinkSecurity(
+        connection_event->handle,
+        SecurityManager::SECURITY_MODE_ENCRYPTION_NO_MITM
+    );
 
-        advertising_data.addData(GapAdvertisingData::COMPLETE_LIST_16BIT_SERVICE_IDS,
-            (uint8_t *)uuid16_list, sizeof(uuid16_list));
-
-
-        /* add device name */
-        advertising_data.addData(
-            GapAdvertisingData::COMPLETE_LOCAL_NAME,
-            DEVICE_NAME,
-            sizeof(DEVICE_NAME)
-        );
-
-        error = _ble.gap().setAdvertisingPayload(advertising_data);
-
-        if (error) {
-            printf("Error during Gap::setAdvertisingPayload\r\n");
-            return;
-        }
-
-        error = _ble.gap().setAppearance(GapAdvertisingData::JOYSTICK);
-
-        /* advertise to everyone */
-        _ble.gap().setAdvertisingType(GapAdvertisingParams::ADV_CONNECTABLE_UNDIRECTED);
-        /* how many milliseconds between advertisements, lower interval
-         * increases the chances of being seen at the cost of more power */
-        _ble.gap().setAdvertisingInterval(20);
-        _ble.gap().setAdvertisingTimeout(0);
-
-        error = _ble.gap().startAdvertising();
-
-        if (error) {
-            printf("Error during Gap::startAdvertising.\r\n");
-            return;
-        }
-
-        /** This tells the stack to generate a pairingRequest event
-         * which will require this application to respond before pairing
-         * can proceed. Setting it to false will automatically accept
-         * pairing. */
-        _ble.securityManager().setPairingRequestAuthorisation(true);
-    };
-
-    /** This is called by Gap to notify the application we connected,
-     *  in our case it immediately requests a change in link security */
-    virtual void on_connect(const Gap::ConnectionCallbackParams_t *connection_event)
-    {
-        ble_error_t error;
-
-        /* remember the device that connects to us now so we can connect to it
-         * during the next demonstration */
-        memcpy(_peer_address, connection_event->peerAddr, sizeof(_peer_address));
-
-        /* store the handle for future Security Manager requests */
-        _handle = connection_event->handle;
-
-        /* Request a change in link security. This will be done
-         * indirectly by asking the master of the connection to
-         * change it. Depending on circumstances different actions
-         * may be taken by the master which will trigger events
-         * which the applications should deal with. */
-        error = _ble.securityManager().setLinkSecurity(
-            _handle,
-            SecurityManager::SECURITY_MODE_ENCRYPTION_NO_MITM
-        );
-
-        if (error) {
-            printf("Error during SM::setLinkSecurity %d\r\n", error);
-            return;
-        }
-    };
+    if (error) {
+        printf("Error during SM::setLinkSecurity %d\r\n", error);
+        return;
+    }
 };
 
+/** This is called by Gap to notify the application we disconnected,
+ *  in our case it ends the demonstration. */
+void on_disconnect(const Gap::DisconnectionCallbackParams_t *event)
+{
+    BLE& ble = BLE::Instance();
+    ble_error_t error;
+    printf("Disconnected - demonstration ended \r\n");
+    queue.cancel(update_handle);
+    error = ble.gap().startAdvertising();
+    if (error) {
+        printf("Error during Gap::startAdvertising.\r\n");
+    } else {
+        printf("Started advertising\r\n");
+    }
+};
+
+void start()
+{
+    /* Set up and start advertising */
+    BLE& ble = BLE::Instance();
+    ble_error_t error;
+    GapAdvertisingData advertising_data;
+
+    /* add advertising flags */
+    advertising_data.addFlags(GapAdvertisingData::LE_GENERAL_DISCOVERABLE
+                              | GapAdvertisingData::BREDR_NOT_SUPPORTED);
+
+    static const uint16_t uuid16_list[] =  {GattService::UUID_HUMAN_INTERFACE_DEVICE_SERVICE};
+
+    advertising_data.addData(GapAdvertisingData::COMPLETE_LIST_16BIT_SERVICE_IDS,
+        (uint8_t *)uuid16_list, sizeof(uuid16_list));
+
+
+    /* add device name */
+    advertising_data.addData(
+        GapAdvertisingData::COMPLETE_LOCAL_NAME,
+        DEVICE_NAME,
+        sizeof(DEVICE_NAME)
+    );
+
+    error = ble.gap().setAdvertisingPayload(advertising_data);
+
+    if (error) {
+        printf("Error during Gap::setAdvertisingPayload\r\n");
+        return;
+    }
+
+    error = ble.gap().setAppearance(GapAdvertisingData::JOYSTICK);
+
+    /* advertise to everyone */
+    ble.gap().setAdvertisingType(GapAdvertisingParams::ADV_CONNECTABLE_UNDIRECTED);
+    /* how many milliseconds between advertisements, lower interval
+     * increases the chances of being seen at the cost of more power */
+    ble.gap().setAdvertisingInterval(20);
+    ble.gap().setAdvertisingTimeout(0);
+
+    error = ble.gap().startAdvertising();
+
+    if (error) {
+        printf("Error during Gap::startAdvertising.\r\n");
+        return;
+    }
+
+    /** This tells the stack to generate a pairingRequest event
+     * which will require this application to respond before pairing
+     * can proceed. Setting it to false will automatically accept
+     * pairing. */
+    ble.securityManager().setPairingRequestAuthorisation(true);
+};
+
+
+/** This is called when BLE interface is initialised and starts the demonstration */
+void on_init_complete(BLE::InitializationCompleteCallbackContext *event)
+{
+    BLE& ble = BLE::Instance();
+    ble_error_t error;
+
+    if (event->error) {
+        printf("Error during the initialisation\r\n");
+        return;
+    }
+
+    /* If the security manager is required this needs to be called before any
+     * calls to the Security manager happen. */
+    error = ble.securityManager().init(true, false, SecurityManager::IO_CAPS_NONE, NULL, true, "/fs/bt.db");
+
+    if (error) {
+        printf("Error during init %d\r\n", error);
+        return;
+    }
+
+    /* Tell the security manager to use methods in this class to inform us
+     * of any events. Class needs to implement SecurityManagerEventHandler. */
+    ble.securityManager().setSecurityManagerEventHandler(&securityManagerEventHandler);
+
+    /* print device address */
+    Gap::AddressType_t addr_type;
+    Gap::Address_t addr;
+    ble.gap().getAddress(&addr_type, addr);
+    printf("Device address: %02x:%02x:%02x:%02x:%02x:%02x\r\n",
+           addr[5], addr[4], addr[3], addr[2], addr[1], addr[0]);
+
+    /* when scanning we want to connect to a peer device so we need to
+     * attach callbacks that are used by Gap to notify us of events */
+    ble.gap().onConnection(&on_connect);
+    ble.gap().onDisconnection(&on_disconnect);
+
+    hidServicePtr = new JoystickService(ble);
+
+    /* start test in 500 ms */
+    queue.call_in(500, &start);
+};
 
 int main()
 {
+    /* to show we're running we'll blink every 500ms */
+    queue.call_every(500, &blink);
+
     btn0.rise(button_rise0);
     btn1.rise(button_rise1);
     btn2.rise(button_rise2);
@@ -452,6 +362,7 @@ int main()
 
     BLE& ble = BLE::Instance();
 
+    // Mount and/or format the filesystem for storing persistent pairing info
     int err = fs.mount(&hbd);
     printf("%s\n", (err ? "Fail :(" : "OK"));
     if (err) {
@@ -466,10 +377,37 @@ int main()
         }
     }
 
-    {
-        printf("\r\n PERIPHERAL \r\n\r\n");
-        SMDevicePeripheral peripheral(ble, queue, peer_address);
-        peripheral.run();
+    // Start bluetooth and the gamepad service
+    printf("\r\n PERIPHERAL \r\n\r\n");
+
+    ble_error_t error;
+
+    if (ble.hasInitialized()) {
+        printf("Ble instance already initialised.\r\n");
+        return -1;
+    }
+
+    /* this will inform us of all events so we can schedule their handling
+     * using our event queue */
+    FunctionPointerWithContext<BLE::OnEventsToProcessCallbackContext*> schedule_fp(schedule_ble_events);
+    ble.onEventsToProcess(schedule_fp);
+
+    /* handle timeouts, for example when connection attempts fail */
+    FunctionPointerWithContext<Gap::TimeoutSource_t> timeout_fp(on_timeout);
+    ble.gap().onTimeout(timeout_fp);
+
+    error = ble.init(on_init_complete);
+
+    if (error) {
+        printf("Error returned by BLE::init.\r\n");
+        return -1;
+    }
+
+    /* this will not return until shutdown */
+    queue.dispatch_forever();
+
+    if (ble.hasInitialized()) {
+        ble.shutdown();
     }
 
     return 0;
