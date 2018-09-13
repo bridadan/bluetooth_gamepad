@@ -24,6 +24,7 @@
 
 JoystickService *hidServicePtr;
 
+events::EventQueue queue;
 /** This example demonstrates all the basic setup required
  *  for pairing and setting up link security both as a central and peripheral
  *
@@ -47,14 +48,96 @@ static BLEProtocol::AddressBytes_t peer_address;
 HeapBlockDevice hbd(8192, 512);
 LittleFileSystem fs("fs");
 
+InterruptIn btn0(D0, PullUp);
+InterruptIn btn1(D1, PullUp);
+InterruptIn btn2(D2, PullUp);
+InterruptIn btn3(D3, PullUp);
+
+AnalogIn a_x0(A5);
+AnalogIn a_y0(A4);
+AnalogIn a_x1(A3);
+AnalogIn a_y1(A2);
+
+AnalogIn *axes[] = { &a_x0, &a_y0, &a_x1, &a_y1 };
+uint8_t axes_initial[4];
+
+const uint8_t AXIS_MAX = 255;
+
+unsigned int map(unsigned int x, unsigned int in_min, unsigned int in_max, unsigned int out_min, unsigned int out_max)
+{
+    return (x - in_min) * (out_max - out_min) / (in_max - in_min) + out_min;
+}
+
+uint8_t read_initial_axis(unsigned int axis) {
+    return axes[axis]->read() * AXIS_MAX;
+}
+
+uint8_t read_axis(unsigned int axis) {
+    uint8_t val = axes[axis]->read() * AXIS_MAX;
+    return 128 + (val - axes_initial[axis]);
+    //return map(val, 50, 220, 0, AXIS_MAX);
+}
+
 uint8_t _hidReport[6] = {0};
 
 int update_handle;
 
 void update_button() {
-    _hidReport[0]++;
-    hidServicePtr->copyReport(_hidReport);
-    hidServicePtr->sendCallback();
+    if (hidServicePtr) {
+        hidServicePtr->copyReport(_hidReport);
+        hidServicePtr->sendCallback();
+    }
+}
+
+void button_rise(int button_number) {
+    _hidReport[0] &= ~(1 << button_number);
+    queue.call(update_button);
+}
+
+void button_rise0() {
+    button_rise(0);
+}
+
+void button_rise1() {
+    button_rise(1);
+}
+
+void button_rise2() {
+    button_rise(2);
+}
+
+void button_rise3() {
+    button_rise(3);
+}
+
+void button_fall(int button_number) {
+    _hidReport[0] |= 1 << button_number;
+    queue.call(update_button);
+}
+
+void button_fall0() {
+    button_fall(0);
+}
+
+void button_fall1() {
+    button_fall(1);
+}
+
+void button_fall2() {
+    button_fall(2);
+}
+
+void button_fall3() {
+    button_fall(3);
+}
+
+void read_analog_sticks() {
+    // TODO only update if enough delta
+    for (unsigned int i = 0; i < 4; i++) {
+        _hidReport[2 + i] = read_axis(i);
+        printf("u%u: %u\r\n", i, _hidReport[2 + i]);
+    }
+    queue.call(update_button);
 }
 
 
@@ -146,7 +229,7 @@ public:
             5000, &_ble.gap(),
             &Gap::disconnect, _handle, Gap::REMOTE_USER_TERMINATED_CONNECTION
         );*/
-        update_handle = _event_queue.call_every(1000, &update_button);
+        update_handle = _event_queue.call_every(250, &read_analog_sticks);
     }
 
     /** Inform the application of change in encryption status. This will be
@@ -352,8 +435,22 @@ public:
 
 int main()
 {
+    btn0.rise(button_rise0);
+    btn1.rise(button_rise1);
+    btn2.rise(button_rise2);
+    btn3.rise(button_rise3);
+    btn0.fall(button_fall0);
+    btn1.fall(button_fall1);
+    btn2.fall(button_fall2);
+    btn3.fall(button_fall3);
+
+    for (unsigned int i = 0; i < 4; i++) {
+        axes_initial[i] = read_initial_axis(i);
+        _hidReport[2 + i] = axes_initial[i];
+        printf("a%u: %u\r\n", i, axes_initial[i]);
+    }
+
     BLE& ble = BLE::Instance();
-    events::EventQueue queue;
 
     int err = fs.mount(&hbd);
     printf("%s\n", (err ? "Fail :(" : "OK"));
