@@ -27,6 +27,7 @@ JoystickService *hidServicePtr;
 events::EventQueue queue;
 
 static const uint8_t DEVICE_NAME[] = "Gamepad";
+static const uint8_t MIN_AXES_DELTA = 5;
 
 HeapBlockDevice hbd(8192, 512);
 LittleFileSystem fs("fs");
@@ -44,6 +45,8 @@ AnalogIn a_y1(A2);
 
 AnalogIn *axes[] = { &a_x0, &a_y0, &a_x1, &a_y1 };
 uint8_t axes_initial[4];
+uint8_t axes_previous[4];
+
 
 const uint8_t AXIS_MAX = 255;
 
@@ -116,11 +119,20 @@ void button_fall3() {
 
 void read_analog_sticks() {
     // TODO only update if enough delta
+    int val;
+    bool update = false;
     for (unsigned int i = 0; i < 4; i++) {
-        _hidReport[2 + i] = read_axis(i);
-        printf("u%u: %u\r\n", i, _hidReport[2 + i]);
+        val = read_axis(i);
+        if (abs((int)axes_previous[i] - val) >= MIN_AXES_DELTA) {
+            _hidReport[2 + i] = val;
+            axes_previous[i] = val;
+            update = true;
+        }
     }
-    queue.call(update_button);
+
+    if (update) {
+        queue.call(update_button);
+    }
 }
 
 void blink(void) {
@@ -152,12 +164,7 @@ public:
             printf("Pairing failed\r\n");
         }
 
-        /* disconnect in 500 ms */
-        /*queue.call_in(
-            5000, &_ble.gap(),
-            &Gap::disconnect, _handle, Gap::REMOTE_USER_TERMINATED_CONNECTION
-        );*/
-        update_handle = queue.call_every(250, &read_analog_sticks);
+        update_handle = queue.call_every(40, &read_analog_sticks);
     }
 
     /** Inform the application of change in encryption status. This will be
