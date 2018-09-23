@@ -21,8 +21,10 @@
 #include "LittleFileSystem.h"
 
 #include "JoystickService.h"
+#include "HatButton.h"
 
 JoystickService *hidServicePtr;
+uint8_t _hidReport[6] = {0};
 
 events::EventQueue queue;
 
@@ -33,15 +35,112 @@ HeapBlockDevice hbd(8192, 512);
 LittleFileSystem fs("fs");
 DigitalOut led(LED1);
 
-InterruptIn btn0(D0, PullUp);
-InterruptIn btn1(D1, PullUp);
-InterruptIn btn2(D2, PullUp);
-InterruptIn btn3(D3, PullUp);
-
 AnalogIn a_x0(A5);
 AnalogIn a_y0(A4);
 AnalogIn a_x1(A3);
 AnalogIn a_y1(A2);
+
+bool hatButtonState[4] = {false};
+
+enum HatDirection {
+    DIR_IDLE = -1,
+    DIR_UP,
+    DIR_UP_RIGHT,
+    DIR_RIGHT,
+    DIR_DOWN_RIGHT,
+    DIR_DOWN,
+    DIR_DOWN_LEFT,
+    DIR_LEFT,
+    DIR_UP_LEFT,
+};
+
+void update_button() {
+    if (hidServicePtr) {
+        hidServicePtr->copyReport(_hidReport);
+        hidServicePtr->sendCallback();
+    }
+}
+
+int8_t hatDirection = DIR_IDLE;
+
+class Button : public InterruptIn {
+    public:
+        Button(PinName pin, unsigned int btnNumber)
+        : InterruptIn(pin, PullUp), _btnNumber(btnNumber), _btnOffset(_btnNumber % 8) {
+            if (_btnNumber <= 7) {
+                _reportIndex = 0;
+            } else {
+                _reportIndex = 1;
+            }
+
+            this->rise(queue.event(this, &Button::onRise));
+            this->fall(queue.event(this, &Button::onFall));
+        }
+
+        virtual void onRise() {
+            // TODO deibounce
+            _hidReport[_reportIndex] &= ~(1 << _btnOffset);
+            update_button();
+        }
+
+        virtual void onFall() {
+            // TODO debounce
+            _hidReport[_reportIndex] |= 1 << _btnOffset;
+            update_button();
+        }
+
+    protected:
+        unsigned int _btnNumber;
+        unsigned int _btnOffset;
+        unsigned int _reportIndex;
+};
+
+void update_hat_direction(HatButton::Direction dir, bool pressed) {
+
+    hatButtonState[dir] = pressed;
+
+    if (hatButtonState[HatButton::UP]) {
+        if (hatButtonState[HatButton::RIGHT]) {
+            hatDirection = DIR_UP_RIGHT;
+        } else if (hatButtonState[HatButton::LEFT]) {
+            hatDirection = DIR_UP_LEFT;
+        } else {
+            hatDirection = DIR_UP;
+        }
+    } else if (hatButtonState[HatButton::DOWN]) {
+        if (hatButtonState[HatButton::RIGHT]) {
+            hatDirection = DIR_DOWN_RIGHT;
+        } else if (hatButtonState[HatButton::LEFT]) {
+            hatDirection = DIR_DOWN_LEFT;
+        } else {
+            hatDirection = DIR_DOWN;
+        }
+    } else if (hatButtonState[HatButton::LEFT]) {
+        hatDirection = DIR_LEFT;
+    } else if (hatButtonState[HatButton::RIGHT]) {
+        hatDirection = DIR_RIGHT;
+    } else {
+        hatDirection = DIR_IDLE;
+    }
+
+    // TODO debounce
+    _hidReport[1] = (hatDirection & 0xF) << 4;
+    queue.call(update_button);
+}
+
+Button btn0(P0_11, 0);
+Button btn1(P0_12, 1);
+Button btn2(P0_13, 2);
+Button btn3(P0_14, 3);
+Button btn4(P0_15, 4);
+Button btn5(P0_16, 5);
+Button btn6(P0_26, 6);
+Button btn7(P0_27, 7);
+HatButton hat0(P0_22, HatButton::UP, &update_hat_direction);
+HatButton hat1(P0_23, HatButton::RIGHT, &update_hat_direction);
+HatButton hat2(P0_24, HatButton::DOWN, &update_hat_direction);
+HatButton hat3(P0_25, HatButton::LEFT, &update_hat_direction);
+
 
 AnalogIn *axes[] = { &a_x0, &a_y0, &a_x1, &a_y1 };
 uint8_t axes_initial[4];
@@ -64,61 +163,9 @@ uint8_t read_axis(unsigned int axis) {
     //return map(val, 50, 220, 0, AXIS_MAX);
 }
 
-uint8_t _hidReport[6] = {0};
-
 int update_handle;
 
-void update_button() {
-    if (hidServicePtr) {
-        hidServicePtr->copyReport(_hidReport);
-        hidServicePtr->sendCallback();
-    }
-}
-
-void button_rise(int button_number) {
-    _hidReport[0] &= ~(1 << button_number);
-    queue.call(update_button);
-}
-
-void button_rise0() {
-    button_rise(0);
-}
-
-void button_rise1() {
-    button_rise(1);
-}
-
-void button_rise2() {
-    button_rise(2);
-}
-
-void button_rise3() {
-    button_rise(3);
-}
-
-void button_fall(int button_number) {
-    _hidReport[0] |= 1 << button_number;
-    queue.call(update_button);
-}
-
-void button_fall0() {
-    button_fall(0);
-}
-
-void button_fall1() {
-    button_fall(1);
-}
-
-void button_fall2() {
-    button_fall(2);
-}
-
-void button_fall3() {
-    button_fall(3);
-}
-
 void read_analog_sticks() {
-    // TODO only update if enough delta
     int val;
     bool update = false;
     for (unsigned int i = 0; i < 4; i++) {
@@ -333,19 +380,9 @@ int main() {
     /* to show we're running we'll blink every 500ms */
     queue.call_every(500, &blink);
 
-    btn0.rise(button_rise0);
-    btn1.rise(button_rise1);
-    btn2.rise(button_rise2);
-    btn3.rise(button_rise3);
-    btn0.fall(button_fall0);
-    btn1.fall(button_fall1);
-    btn2.fall(button_fall2);
-    btn3.fall(button_fall3);
-
     for (unsigned int i = 0; i < 4; i++) {
         axes_initial[i] = read_initial_axis(i);
         _hidReport[2 + i] = axes_initial[i];
-        printf("a%u: %u\r\n", i, axes_initial[i]);
     }
 
     BLE& ble = BLE::Instance();
@@ -392,6 +429,7 @@ int main() {
     }
 
     /* this will not return until shutdown */
+    printf("Dispatching queue\r\n");
     queue.dispatch_forever();
 
     if (ble.hasInitialized()) {
